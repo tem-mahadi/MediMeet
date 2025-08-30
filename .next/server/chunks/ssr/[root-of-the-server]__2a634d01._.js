@@ -610,7 +610,7 @@ var __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist
 var __TURBOPACK__imported__module__$5b$project$5d2f$lib$2f$prisma$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/lib/prisma.js [app-rsc] (ecmascript)");
 var __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f40$clerk$2f$nextjs$2f$dist$2f$esm$2f$app$2d$router$2f$server$2f$auth$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/node_modules/@clerk/nextjs/dist/esm/app-router/server/auth.js [app-rsc] (ecmascript)");
 var __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$cache$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/node_modules/next/cache.js [app-rsc] (ecmascript)");
-var __TURBOPACK__imported__module__$5b$project$5d2f$actions$2f$credits$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/actions/credits.js [app-rsc] (ecmascript)");
+// deductCreditsForAppointment handled inside booking transaction to avoid race conditions
 var __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f40$vonage$2f$server$2d$sdk$2f$dist$2f$lib$2f$index$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/node_modules/@vonage/server-sdk/dist/lib/index.js [app-rsc] (ecmascript)");
 var __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$date$2d$fns$2f$addDays$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/node_modules/date-fns/addDays.js [app-rsc] (ecmascript)");
 var __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$date$2d$fns$2f$addMinutes$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/node_modules/date-fns/addMinutes.js [app-rsc] (ecmascript)");
@@ -619,7 +619,6 @@ var __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$date$2d$fns$
 var __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$date$2d$fns$2f$endOfDay$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/node_modules/date-fns/endOfDay.js [app-rsc] (ecmascript)");
 var __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f40$vonage$2f$auth$2f$dist$2f$lib$2f$index$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/node_modules/@vonage/auth/dist/lib/index.js [app-rsc] (ecmascript)");
 var __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$build$2f$webpack$2f$loaders$2f$next$2d$flight$2d$loader$2f$action$2d$validate$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/node_modules/next/dist/build/webpack/loaders/next-flight-loader/action-validate.js [app-rsc] (ecmascript)");
-;
 ;
 ;
 ;
@@ -675,65 +674,152 @@ async function bookAppointment(formData) {
         if (patient.credits < 2) {
             throw new Error("Insufficient credits to book an appointment");
         }
-        // Check if the requested time slot is available
-        const overlappingAppointment = await __TURBOPACK__imported__module__$5b$project$5d2f$lib$2f$prisma$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["db"].appointment.findFirst({
-            where: {
-                doctorId: doctorId,
-                status: "SCHEDULED",
-                OR: [
-                    {
-                        // New appointment starts during an existing appointment
-                        startTime: {
-                            lte: startTime
-                        },
-                        endTime: {
-                            gt: startTime
-                        }
-                    },
-                    {
-                        // New appointment ends during an existing appointment
-                        startTime: {
-                            lt: endTime
-                        },
-                        endTime: {
-                            gte: endTime
-                        }
-                    },
-                    {
-                        // New appointment completely overlaps an existing appointment
-                        startTime: {
-                            gte: startTime
-                        },
-                        endTime: {
-                            lte: endTime
-                        }
-                    }
-                ]
-            }
-        });
-        if (overlappingAppointment) {
-            throw new Error("This time slot is already booked");
-        }
-        // Create a new Vonage Video API session
+        // Create a new Vonage Video API session (do this before DB tx)
         const sessionId = await createVideoSession();
-        // Deduct credits from patient and add to doctor
-        const { success, error } = await (0, __TURBOPACK__imported__module__$5b$project$5d2f$actions$2f$credits$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["deductCreditsForAppointment"])(patient.id, doctor.id);
-        if (!success) {
-            throw new Error(error || "Failed to deduct credits");
-        }
-        // Create the appointment with the video session ID
-        const appointment = await __TURBOPACK__imported__module__$5b$project$5d2f$lib$2f$prisma$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["db"].appointment.create({
-            data: {
-                patientId: patient.id,
-                doctorId: doctor.id,
-                startTime,
-                endTime,
-                patientDescription,
-                status: "SCHEDULED",
-                videoSessionId: sessionId
+        // Perform overlap checks, credit transfer and appointment creation inside a single serializable transaction
+        const appointment = await __TURBOPACK__imported__module__$5b$project$5d2f$lib$2f$prisma$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["db"].$transaction(async (tx)=>{
+            // Re-fetch patient and doctor inside transaction to ensure up-to-date values
+            const txPatient = await tx.user.findUnique({
+                where: {
+                    id: patient.id
+                }
+            });
+            const txDoctor = await tx.user.findUnique({
+                where: {
+                    id: doctor.id
+                }
+            });
+            if (!txPatient) throw new Error("Patient not found (tx)");
+            if (!txDoctor) throw new Error("Doctor not found (tx)");
+            // Check overlapping appointments for doctor
+            const overlappingForDoctor = await tx.appointment.findFirst({
+                where: {
+                    doctorId: doctorId,
+                    status: "SCHEDULED",
+                    OR: [
+                        {
+                            startTime: {
+                                lte: startTime
+                            },
+                            endTime: {
+                                gt: startTime
+                            }
+                        },
+                        {
+                            startTime: {
+                                lt: endTime
+                            },
+                            endTime: {
+                                gte: endTime
+                            }
+                        },
+                        {
+                            startTime: {
+                                gte: startTime
+                            },
+                            endTime: {
+                                lte: endTime
+                            }
+                        }
+                    ]
+                }
+            });
+            if (overlappingForDoctor) {
+                throw new Error("This time slot is already booked for the doctor");
             }
+            // Check overlapping appointments for patient (prevent patient booking multiple at same time)
+            const overlappingForPatient = await tx.appointment.findFirst({
+                where: {
+                    patientId: txPatient.id,
+                    status: "SCHEDULED",
+                    OR: [
+                        {
+                            startTime: {
+                                lte: startTime
+                            },
+                            endTime: {
+                                gt: startTime
+                            }
+                        },
+                        {
+                            startTime: {
+                                lt: endTime
+                            },
+                            endTime: {
+                                gte: endTime
+                            }
+                        },
+                        {
+                            startTime: {
+                                gte: startTime
+                            },
+                            endTime: {
+                                lte: endTime
+                            }
+                        }
+                    ]
+                }
+            });
+            if (overlappingForPatient) {
+                throw new Error("You already have an appointment at this time");
+            }
+            // Ensure patient has sufficient credits inside transaction
+            if (txPatient.credits < 2) {
+                throw new Error("Insufficient credits to book an appointment");
+            }
+            // Create credit transactions and update balances
+            await tx.creditTransaction.create({
+                data: {
+                    userId: txPatient.id,
+                    amount: -2,
+                    type: "APPOINTMENT_DEDUCTION"
+                }
+            });
+            await tx.creditTransaction.create({
+                data: {
+                    userId: txDoctor.id,
+                    amount: 2,
+                    type: "APPOINTMENT_DEDUCTION"
+                }
+            });
+            await tx.user.update({
+                where: {
+                    id: txPatient.id
+                },
+                data: {
+                    credits: {
+                        decrement: 2
+                    }
+                }
+            });
+            await tx.user.update({
+                where: {
+                    id: txDoctor.id
+                },
+                data: {
+                    credits: {
+                        increment: 2
+                    }
+                }
+            });
+            // Create the appointment
+            const created = await tx.appointment.create({
+                data: {
+                    patientId: txPatient.id,
+                    doctorId: txDoctor.id,
+                    startTime,
+                    endTime,
+                    patientDescription,
+                    status: "SCHEDULED",
+                    videoSessionId: sessionId
+                }
+            });
+            return created;
+        }, {
+            isolationLevel: "Serializable"
         });
         (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$cache$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["revalidatePath"])("/appointments");
+        (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$cache$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["revalidatePath"])("/doctor");
         return {
             success: true,
             appointment: appointment

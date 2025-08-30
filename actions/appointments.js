@@ -3,7 +3,7 @@
 import { db } from "@/lib/prisma";
 import { auth } from "@clerk/nextjs/server";
 import { revalidatePath } from "next/cache";
-import { deductCreditsForAppointment } from "@/actions/credits";
+// deductCreditsForAppointment handled inside booking transaction to avoid race conditions
 import { Vonage } from "@vonage/server-sdk";
 import { addDays, addMinutes, format, isBefore, endOfDay } from "date-fns";
 import { Auth } from "@vonage/auth";
@@ -68,75 +68,124 @@ export async function bookAppointment(formData) {
       throw new Error("Insufficient credits to book an appointment");
     }
 
-    // Check if the requested time slot is available
-    const overlappingAppointment = await db.appointment.findFirst({
-      where: {
-        doctorId: doctorId,
-        status: "SCHEDULED",
-        OR: [
-          {
-            // New appointment starts during an existing appointment
-            startTime: {
-              lte: startTime,
-            },
-            endTime: {
-              gt: startTime,
-            },
-          },
-          {
-            // New appointment ends during an existing appointment
-            startTime: {
-              lt: endTime,
-            },
-            endTime: {
-              gte: endTime,
-            },
-          },
-          {
-            // New appointment completely overlaps an existing appointment
-            startTime: {
-              gte: startTime,
-            },
-            endTime: {
-              lte: endTime,
-            },
-          },
-        ],
-      },
-    });
-
-    if (overlappingAppointment) {
-      throw new Error("This time slot is already booked");
-    }
-
-    // Create a new Vonage Video API session
+    // Create a new Vonage Video API session (do this before DB tx)
     const sessionId = await createVideoSession();
 
-    // Deduct credits from patient and add to doctor
-    const { success, error } = await deductCreditsForAppointment(
-      patient.id,
-      doctor.id
+    // Perform overlap checks, credit transfer and appointment creation inside a single serializable transaction
+    const appointment = await db.$transaction(
+      async (tx) => {
+        // Re-fetch patient and doctor inside transaction to ensure up-to-date values
+        const txPatient = await tx.user.findUnique({ where: { id: patient.id } });
+        const txDoctor = await tx.user.findUnique({ where: { id: doctor.id } });
+
+        if (!txPatient) throw new Error("Patient not found (tx)");
+        if (!txDoctor) throw new Error("Doctor not found (tx)");
+
+        // Check overlapping appointments for doctor
+        const overlappingForDoctor = await tx.appointment.findFirst({
+          where: {
+            doctorId: doctorId,
+            status: "SCHEDULED",
+            OR: [
+              {
+                startTime: { lte: startTime },
+                endTime: { gt: startTime },
+              },
+              {
+                startTime: { lt: endTime },
+                endTime: { gte: endTime },
+              },
+              {
+                startTime: { gte: startTime },
+                endTime: { lte: endTime },
+              },
+            ],
+          },
+        });
+
+        if (overlappingForDoctor) {
+          throw new Error("This time slot is already booked for the doctor");
+        }
+
+        // Check overlapping appointments for patient (prevent patient booking multiple at same time)
+        const overlappingForPatient = await tx.appointment.findFirst({
+          where: {
+            patientId: txPatient.id,
+            status: "SCHEDULED",
+            OR: [
+              {
+                startTime: { lte: startTime },
+                endTime: { gt: startTime },
+              },
+              {
+                startTime: { lt: endTime },
+                endTime: { gte: endTime },
+              },
+              {
+                startTime: { gte: startTime },
+                endTime: { lte: endTime },
+              },
+            ],
+          },
+        });
+
+        if (overlappingForPatient) {
+          throw new Error("You already have an appointment at this time");
+        }
+
+        // Ensure patient has sufficient credits inside transaction
+        if (txPatient.credits < 2) {
+          throw new Error("Insufficient credits to book an appointment");
+        }
+
+        // Create credit transactions and update balances
+        await tx.creditTransaction.create({
+          data: {
+            userId: txPatient.id,
+            amount: -2,
+            type: "APPOINTMENT_DEDUCTION",
+          },
+        });
+
+        await tx.creditTransaction.create({
+          data: {
+            userId: txDoctor.id,
+            amount: 2,
+            type: "APPOINTMENT_DEDUCTION",
+          },
+        });
+
+        await tx.user.update({
+          where: { id: txPatient.id },
+          data: { credits: { decrement: 2 } },
+        });
+
+        await tx.user.update({
+          where: { id: txDoctor.id },
+          data: { credits: { increment: 2 } },
+        });
+
+        // Create the appointment
+        const created = await tx.appointment.create({
+          data: {
+            patientId: txPatient.id,
+            doctorId: txDoctor.id,
+            startTime,
+            endTime,
+            patientDescription,
+            status: "SCHEDULED",
+            videoSessionId: sessionId,
+          },
+        });
+
+        return created;
+      },
+      { isolationLevel: "Serializable" }
     );
 
-    if (!success) {
-      throw new Error(error || "Failed to deduct credits");
-    }
-
-    // Create the appointment with the video session ID
-    const appointment = await db.appointment.create({
-      data: {
-        patientId: patient.id,
-        doctorId: doctor.id,
-        startTime,
-        endTime,
-        patientDescription,
-        status: "SCHEDULED",
-        videoSessionId: sessionId, // Store the Vonage session ID
-      },
-    });
-
-    revalidatePath("/appointments");
-    return { success: true, appointment: appointment };
+  revalidatePath("/appointments");
+  revalidatePath("/doctor");
+  return { success: true, appointment: appointment };
   } catch (error) {
     console.error("Failed to book appointment:", error);
     throw new Error("Failed to book appointment:" + error.message);

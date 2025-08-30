@@ -1,0 +1,16 @@
+{
+  "/(auth)/sign-in/[[...sign-in]]/page": "app/(auth)/sign-in/[[...sign-in]]/page.js",
+  "/(auth)/sign-up/[[...sign-up]]/page": "app/(auth)/sign-up/[[...sign-up]]/page.js",
+  "/(main)/admin/page": "app/(main)/admin/page.js",
+  "/(main)/appointments/page": "app/(main)/appointments/page.js",
+  "/(main)/doctor/page": "app/(main)/doctor/page.js",
+  "/(main)/doctor/verification/page": "app/(main)/doctor/verification/page.js",
+  "/(main)/doctors/[specialty]/[id]/page": "app/(main)/doctors/[specialty]/[id]/page.js",
+  "/(main)/doctors/[specialty]/page": "app/(main)/doctors/[specialty]/page.js",
+  "/(main)/doctors/page": "app/(main)/doctors/page.js",
+  "/(main)/onboarding/page": "app/(main)/onboarding/page.js",
+  "/(main)/pricing/page": "app/(main)/pricing/page.js",
+  "/_not-found/page": "app/_not-found/page.js",
+  "/favicon.ico/route": "app/favicon.ico/route.js",
+  "/page": "app/page.js"
+}
